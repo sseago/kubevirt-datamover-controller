@@ -461,10 +461,11 @@ func (r *KubeVirtDataDownloadReconciler) handleAccepted(ctx context.Context, log
 	// Immediate-binding StorageClass lets the provisioner bind this PVC to a
 	// foreign PV within seconds of Velero creating it, long before the download
 	// completes. Reject it now rather than after a full download only to fail
-	// in validateExistingPVCForBind.
+	// in validateExistingPVCForBind. This often occurs when attempting to restore
+	// a VM that already exists, which the KubeVirt datamover does not support.
 	if targetPVC.Spec.VolumeName != "" || targetPVC.Status.Phase == corev1.ClaimBound {
 		if err := r.updatePhase(ctx, dd, velerov2alpha1.DataDownloadPhaseFailed,
-			fmt.Sprintf("target PVC %s/%s is already bound or requests volume %q, which conflicts with restore rebinding",
+			fmt.Sprintf("target PVC %s/%s is already bound or requests volume %q, which conflicts with restore rebinding (this may indicate an attempt to restore a VM that already exists, which the KubeVirt datamover does not support)",
 				dd.Spec.TargetVolume.Namespace, dd.Spec.TargetVolume.PVC, targetPVC.Spec.VolumeName)); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -2086,7 +2087,7 @@ func (r *KubeVirtDataDownloadReconciler) checkConcurrentDataMoverLimit(ctx conte
 
 // countHigherPriorityActiveDataDownloads counts kubevirt-datamover
 // DataDownloads in dd's namespace, excluding dd itself, that are in an active
-// phase (Accepted, Prepared, InProgress) AND outrank dd per
+// phase (Accepted, Prepared, InProgress) AND outranks dd per
 // outranksDataDownload's ordering. Used by handlePrepared to gate pod
 // creation against MaxConcurrentDataMovers.
 //
