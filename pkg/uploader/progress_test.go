@@ -2,7 +2,6 @@ package uploader
 
 import (
 	"bytes"
-	"io"
 	"testing"
 	"time"
 )
