@@ -940,7 +940,7 @@ func (r *KubeVirtDataUploadReconciler) validateBSLCheckpoint(ctx context.Context
 			"reason", bslErr.Error())
 	} else {
 		var err error
-		checkpointLookup, err = r.lookupCheckpointFromBSL(ctx, bsl, vmNamespace, vmRef.Name)
+		checkpointLookup, err = r.lookupCheckpointFromBSL(ctx, bsl, vmRef.Namespace, vmRef.Name)
 		if err != nil {
 			// Checkpoint lookup failure is non-fatal. Validation will be retried
 			// on the next reconcile.
