@@ -43,6 +43,9 @@ import (
 
 const apiGroupKubeVirt = "kubevirt.io"
 
+const EnvPodName = "POD_NAME"
+const EnvPodNamespace = "POD_NAMESPACE"
+
 // Run is the main entrypoint for the uploader.
 func Run(ctx context.Context, logger logr.Logger) error {
 	logger.Info("Starting kubevirt datamover uploader")
@@ -66,8 +69,14 @@ func Run(ctx context.Context, logger logr.Logger) error {
 
 	logger.Info("Object store initialized", "bucket", config.BSLBucket, "prefix", config.BSLPrefix)
 
+	// Create K8s client early for progress reporting
+	k8sClient, err := newKubeClient()
+	if err != nil {
+		return fmt.Errorf("failed to create K8s client: %w", err)
+	}
+
 	// Upload qcow2 files
-	files, err := uploadQcow2Files(ctx, store, config, logger)
+	files, err := uploadQcow2Files(ctx, store, config, k8sClient, logger)
 	if err != nil {
 		return fmt.Errorf("failed to upload qcow2 files: %w", err)
 	}
@@ -77,12 +86,6 @@ func Run(ctx context.Context, logger logr.Logger) error {
 	}
 
 	logger.Info("Uploaded qcow2 files", "count", len(files))
-
-	// Create K8s client once — reused for archiving and cleanup
-	k8sClient, err := newKubeClient()
-	if err != nil {
-		return fmt.Errorf("failed to create K8s client: %w", err)
-	}
 
 	// Archive VMB/VMBT CRs to S3 (FATAL if fails — index references must be valid)
 	archived, err := archiveKubeResources(ctx, store, k8sClient, config, logger)
@@ -116,6 +119,8 @@ func Run(ctx context.Context, logger logr.Logger) error {
 // LoadConfigFromEnv parses environment variables into UploaderConfig.
 func LoadConfigFromEnv() (*UploaderConfig, error) {
 	config := &UploaderConfig{
+		PodName:      os.Getenv(EnvPodName),
+		PodNamespace: os.Getenv(EnvPodNamespace),
 		ObjectStoreConfig: common.ObjectStoreConfig{
 			BSLProvider:                    os.Getenv(common.EnvBSLProvider),
 			BSLBucket:                      os.Getenv(common.EnvBSLBucket),
@@ -196,9 +201,30 @@ func LoadConfigFromEnv() (*UploaderConfig, error) {
 
 // uploadQcow2Files walks the source path and uploads all qcow2 files.
 func uploadQcow2Files(
-	_ context.Context, store velero.ObjectStore, config *UploaderConfig, logger logr.Logger,
+	ctx context.Context, store velero.ObjectStore, config *UploaderConfig, k8sClient client.Client, logger logr.Logger,
 ) ([]CheckpointFile, error) {
 	var files []CheckpointFile
+	var totalBytes int64
+	var bytesDone int64
+
+	// First pass: calculate total payload size
+	_ = filepath.WalkDir(config.SourcePVCPath, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".qcow2") {
+			if info, err := d.Info(); err == nil {
+				totalBytes += info.Size()
+			}
+		}
+		return nil
+	})
+
+	reportProgress := func(currentDone int64) {
+		if config.PodName != "" && config.PodNamespace != "" {
+			patchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, totalBytes, currentDone, logger)
+		}
+	}
+
+	// Initial report
+	reportProgress(0)
 
 	err := filepath.WalkDir(config.SourcePVCPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -233,8 +259,16 @@ func uploadQcow2Files(
 
 		logger.Info("Uploading file", "filename", d.Name(), "size", info.Size(), "objectPath", objectPath)
 
+		progressReader := &ProgressReader{
+			Reader:     file,
+			UpdateFreq: 5 * time.Second,
+			Reporter: func(read int64) {
+				reportProgress(bytesDone + read)
+			},
+		}
+
 		// Upload file using velero.ObjectStore interface
-		uploadErr := store.PutObject(config.BSLBucket, objectPath, file)
+		uploadErr := store.PutObject(config.BSLBucket, objectPath, progressReader)
 		// Close file immediately after upload to avoid resource exhaustion with many files
 		_ = file.Close()
 		if uploadErr != nil {
@@ -250,6 +284,8 @@ func uploadQcow2Files(
 			ObjectPath: objectPath,
 		})
 
+		bytesDone += info.Size()
+
 		return nil
 	})
 
@@ -258,6 +294,21 @@ func uploadQcow2Files(
 	}
 
 	return files, nil
+}
+
+func patchPodProgress(ctx context.Context, k8sClient client.Client, name, namespace string, total, done int64, logger logr.Logger) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+	}
+	patch := client.RawPatch(types.MergePatchType, []byte(fmt.Sprintf(
+		`{"metadata":{"annotations":{"kubevirt-datamover.io/total-bytes":"%d","kubevirt-datamover.io/bytes-done":"%d"}}}`,
+		total, done)))
+	if err := k8sClient.Patch(ctx, pod, patch); err != nil {
+		logger.V(1).Info("Failed to patch pod progress", "error", err)
+	}
 }
 
 // extractDiskName extracts the disk name from a qcow2 filename.

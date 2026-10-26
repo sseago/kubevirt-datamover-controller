@@ -120,6 +120,10 @@ type UploaderConfig struct {
 	// with DownloaderConfig so object-store init code isn't duplicated.
 	common.ObjectStoreConfig
 
+	// Pod context (used for progress reporting)
+	PodName      string
+	PodNamespace string
+
 	// VM context
 	VMName      string
 	VMNamespace string

@@ -940,7 +940,7 @@ func (r *KubeVirtDataUploadReconciler) validateBSLCheckpoint(ctx context.Context
 			"reason", bslErr.Error())
 	} else {
 		var err error
-		checkpointLookup, err = r.lookupCheckpointFromBSL(ctx, bsl, vmRef.Namespace, vmRef.Name)
+		checkpointLookup, err = r.lookupCheckpointFromBSL(ctx, bsl, vmNamespace, vmRef.Name)
 		if err != nil {
 			// Checkpoint lookup failure is non-fatal. Validation will be retried
 			// on the next reconcile.
@@ -1269,6 +1269,25 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 		return ctrl.Result{}, nil
 
 	case corev1.PodPending, corev1.PodRunning:
+		// Read progress from pod annotations
+		if pod.Annotations != nil {
+			totalStr := pod.Annotations["kubevirt-datamover.io/total-bytes"]
+			doneStr := pod.Annotations["kubevirt-datamover.io/bytes-done"]
+			
+			if totalStr != "" && doneStr != "" {
+				total, _ := strconv.ParseInt(totalStr, 10, 64)
+				done, _ := strconv.ParseInt(doneStr, 10, 64)
+				
+				if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done {
+					du.Status.Progress.TotalBytes = total
+					du.Status.Progress.BytesDone = done
+					if err := r.Status().Update(ctx, du); err != nil {
+						logger.V(1).Info("Failed to update DataUpload progress", "error", err)
+					}
+				}
+			}
+		}
+
 		logger.V(1).Info("Datamover pod still running", "pod", pod.Name, "phase", pod.Status.Phase)
 		return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 

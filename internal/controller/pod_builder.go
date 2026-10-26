@@ -482,6 +482,18 @@ func buildUploadPodResources(config *DatamoverPodConfig) ([]corev1.EnvVar, []cor
 		corev1.EnvVar{Name: uploader.EnvDataUploadUID, Value: config.ResourceUID},
 		corev1.EnvVar{Name: uploader.EnvVMBName, Value: config.VMBName},
 		corev1.EnvVar{Name: uploader.EnvVMBTName, Value: config.VMBTName},
+		corev1.EnvVar{
+			Name: uploader.EnvPodName,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
+			},
+		},
+		corev1.EnvVar{
+			Name: uploader.EnvPodNamespace,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+			},
+		},
 	)
 
 	volumes := []corev1.Volume{
