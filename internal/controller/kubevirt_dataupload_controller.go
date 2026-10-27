@@ -1273,11 +1273,11 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 		if pod.Annotations != nil {
 			totalStr := pod.Annotations["kubevirt-datamover.io/total-bytes"]
 			doneStr := pod.Annotations["kubevirt-datamover.io/bytes-done"]
-			
+
 			if totalStr != "" && doneStr != "" {
 				total, _ := strconv.ParseInt(totalStr, 10, 64)
 				done, _ := strconv.ParseInt(doneStr, 10, 64)
-				
+
 				if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done {
 					du.Status.Progress.TotalBytes = total
 					du.Status.Progress.BytesDone = done
