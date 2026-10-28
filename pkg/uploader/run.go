@@ -211,19 +211,27 @@ func uploadQcow2Files(
 	// Calculate total PVC size (TotalBytes)
 	vm := &kubevirtcorev1.VirtualMachine{}
 	if err := k8sClient.Get(ctx, types.NamespacedName{Name: config.VMName, Namespace: config.VMNamespace}, vm); err == nil {
-		for _, pvcName := range common.GetVolumesForVm(vm) {
+		volumeMap := common.GetVolumeMapForVm(vm)
+		for _, pvcName := range volumeMap {
+			if pvcName == "" {
+				continue
+			}
 			pvc := &corev1.PersistentVolumeClaim{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: config.VMNamespace}, pvc); err == nil {
-				storage := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
-				if pvc.Spec.VolumeName != "" {
-					pv := &corev1.PersistentVolume{}
-					if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, pv); err == nil {
-						if capacity, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok && capacity.Cmp(storage) > 0 {
-							storage = capacity
+				if pvc.Spec.Resources.Requests != nil {
+					storage := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+					if pvc.Spec.VolumeName != "" {
+						pv := &corev1.PersistentVolume{}
+						if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, pv); err == nil {
+							if pv.Spec.Capacity != nil {
+								if capacity, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok && capacity.Cmp(storage) > 0 {
+									storage = capacity
+								}
+							}
 						}
 					}
+					totalBytes += storage.Value()
 				}
-				totalBytes += storage.Value()
 			}
 		}
 	}
@@ -332,7 +340,7 @@ func patchPodProgress(ctx context.Context, k8sClient client.Client, name, namesp
 		`{"metadata":{"annotations":{"kubevirt-datamover.io/total-bytes":"%d","kubevirt-datamover.io/incremental-bytes":"%d","kubevirt-datamover.io/bytes-done":"%d"}}}`,
 		total, inc, done)))
 	if err := k8sClient.Patch(ctx, pod, patch); err != nil {
-		logger.V(1).Info("Failed to patch pod progress", "error", err)
+		logger.Error(err, "Failed to patch pod progress annotations")
 	}
 }
 
