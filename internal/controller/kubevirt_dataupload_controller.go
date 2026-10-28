@@ -1290,7 +1290,7 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 					du.Status.Progress.TotalBytes = total
 					du.Status.Progress.BytesDone = done
 					du.Status.IncrementalBytes = inc
-					if err := r.Update(ctx, du); err != nil {
+					if err := r.Status().Update(ctx, du); err != nil {
 						logger.V(1).Info("Failed to update DataUpload progress", "error", err)
 					}
 				}
