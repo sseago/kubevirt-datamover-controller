@@ -3805,6 +3805,7 @@ func TestBuildDatamoverPodConfig(t *testing.T) {
 				tt.expectedBackupType,
 				tt.checkpointName,
 				tt.vmbtName,
+				resource.MustParse("10Gi"),
 			)
 
 			if tt.expectError {
