@@ -1150,8 +1150,21 @@ func (r *KubeVirtDataUploadReconciler) handlePrepared(ctx context.Context, logge
 		return ctrl.Result{}, nil
 	}
 
+	tempPVC, err := r.findTempPVC(ctx, du, vmRef.Namespace)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to find temporary PVC: %w", err)
+	}
+	if tempPVC == nil {
+		err := fmt.Errorf("temporary PVC not found")
+		logger.Error(err, "Cannot determine PVC size")
+		if updateErr := r.updatePhase(ctx, du, velerov2alpha1.DataUploadPhaseFailed, err.Error()); updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Build datamover pod config - now using OADP namespace and rebound PVC
-	podConfig, err := r.buildDatamoverPodConfig(du, bsl, vmb, vmRef, backupType, expectedBackupType, checkpointName, vmbtName, pvc.Spec.Resources.Requests[corev1.ResourceStorage])
+	podConfig, err := r.buildDatamoverPodConfig(du, bsl, vmb, vmRef, backupType, expectedBackupType, checkpointName, vmbtName, tempPVC.Spec.Resources.Requests[corev1.ResourceStorage])
 	if err != nil {
 		logger.Error(err, "Failed to build datamover pod config")
 		if err := r.updatePhase(ctx, du, velerov2alpha1.DataUploadPhaseFailed, fmt.Sprintf("Failed to build pod config: %v", err)); err != nil {
