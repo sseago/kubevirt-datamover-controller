@@ -4039,7 +4039,22 @@ func TestHandlePrepared(t *testing.T) {
 					},
 				}
 
-				return []runtime.Object{bsl, vmb, reboundPVC}
+				tempPVC := &corev1.PersistentVolumeClaim{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      tempPVCName,
+						Namespace: "vm-ns",
+						Labels: map[string]string{
+							common.LabelDataUploadUID: "du-uid-123",
+						},
+					},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						Resources: corev1.VolumeResourceRequirements{
+							Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+						},
+					},
+				}
+
+				return []runtime.Object{bsl, vmb, reboundPVC, tempPVC}
 			},
 			expectError:   false,
 			expectedPhase: velerov2alpha1.DataUploadPhaseInProgress,
@@ -4422,8 +4437,23 @@ func TestHandlePreparedDataUpload_ConcurrencyLimit(t *testing.T) {
 			Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
 		}
 
-		objs := make([]runtime.Object, 0, 3+otherActiveCount)
-		objs = append(objs, bsl, vmb, reboundPVC)
+		tempPVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      tempPVCName,
+				Namespace: "vm-ns",
+				Labels: map[string]string{
+					common.LabelDataUploadUID: "du-uid-123",
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+				},
+			},
+		}
+
+		objs := make([]runtime.Object, 0, 4+otherActiveCount)
+		objs = append(objs, bsl, vmb, reboundPVC, tempPVC)
 		for i := range otherActiveCount {
 			other := &velerov2alpha1.DataUpload{
 				ObjectMeta: metav1.ObjectMeta{
@@ -4622,8 +4652,22 @@ func TestHandlePreparedDataUpload_ConcurrentDeadlockRegression(t *testing.T) {
 			},
 			Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
 		}
+		tempPVC := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      tempPVCName,
+				Namespace: "vm-ns",
+				Labels: map[string]string{
+					common.LabelDataUploadUID: string(du.UID),
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+				},
+			},
+		}
 		dus[i] = du
-		objs = append(objs, du, vmb, reboundPVC)
+		objs = append(objs, du, vmb, reboundPVC, tempPVC)
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
