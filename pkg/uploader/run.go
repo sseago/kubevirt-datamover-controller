@@ -205,21 +205,46 @@ func uploadQcow2Files(
 ) ([]CheckpointFile, error) {
 	var files []CheckpointFile
 	var totalBytes int64
+	var incrementalBytes int64
 	var bytesDone int64
 
-	// First pass: calculate total payload size
+	// Calculate total PVC size (TotalBytes)
+	vm := &kubevirtcorev1.VirtualMachine{}
+	if err := k8sClient.Get(ctx, types.NamespacedName{Name: config.VMName, Namespace: config.VMNamespace}, vm); err == nil {
+		for _, pvcName := range common.GetVolumesForVm(vm) {
+			pvc := &corev1.PersistentVolumeClaim{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: config.VMNamespace}, pvc); err == nil {
+				storage := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
+				if pvc.Spec.VolumeName != "" {
+					pv := &corev1.PersistentVolume{}
+					if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, pv); err == nil {
+						if capacity, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok && capacity.Cmp(storage) > 0 {
+							storage = capacity
+						}
+					}
+				}
+				totalBytes += storage.Value()
+			}
+		}
+	}
+
+	// First pass: calculate total payload size (IncrementalBytes)
 	_ = filepath.WalkDir(config.SourcePVCPath, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() && strings.HasSuffix(strings.ToLower(d.Name()), ".qcow2") {
 			if info, err := d.Info(); err == nil {
-				totalBytes += info.Size()
+				incrementalBytes += info.Size()
 			}
 		}
 		return nil
 	})
 
+	if totalBytes == 0 {
+		totalBytes = incrementalBytes // Fallback if VM/PVC lookup failed
+	}
+
 	reportProgress := func(currentDone int64) {
 		if config.PodName != "" && config.PodNamespace != "" {
-			patchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, totalBytes, currentDone, logger)
+			patchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, totalBytes, incrementalBytes, currentDone, logger)
 		}
 	}
 
@@ -296,7 +321,7 @@ func uploadQcow2Files(
 	return files, nil
 }
 
-func patchPodProgress(ctx context.Context, k8sClient client.Client, name, namespace string, total, done int64, logger logr.Logger) {
+func patchPodProgress(ctx context.Context, k8sClient client.Client, name, namespace string, total, inc, done int64, logger logr.Logger) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -304,8 +329,8 @@ func patchPodProgress(ctx context.Context, k8sClient client.Client, name, namesp
 		},
 	}
 	patch := client.RawPatch(types.MergePatchType, []byte(fmt.Sprintf(
-		`{"metadata":{"annotations":{"kubevirt-datamover.io/total-bytes":"%d","kubevirt-datamover.io/bytes-done":"%d"}}}`,
-		total, done)))
+		`{"metadata":{"annotations":{"kubevirt-datamover.io/total-bytes":"%d","kubevirt-datamover.io/incremental-bytes":"%d","kubevirt-datamover.io/bytes-done":"%d"}}}`,
+		total, inc, done)))
 	if err := k8sClient.Patch(ctx, pod, patch); err != nil {
 		logger.V(1).Info("Failed to patch pod progress", "error", err)
 	}

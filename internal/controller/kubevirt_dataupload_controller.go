@@ -1272,15 +1272,24 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 		// Read progress from pod annotations
 		if pod.Annotations != nil {
 			totalStr := pod.Annotations["kubevirt-datamover.io/total-bytes"]
+			incStr := pod.Annotations["kubevirt-datamover.io/incremental-bytes"]
 			doneStr := pod.Annotations["kubevirt-datamover.io/bytes-done"]
 
 			if totalStr != "" && doneStr != "" {
 				total, _ := strconv.ParseInt(totalStr, 10, 64)
 				done, _ := strconv.ParseInt(doneStr, 10, 64)
 
-				if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done {
+				var inc int64
+				if incStr != "" {
+					inc, _ = strconv.ParseInt(incStr, 10, 64)
+				} else {
+					inc = total
+				}
+
+				if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done || du.Status.Progress.IncrementalBytes != inc {
 					du.Status.Progress.TotalBytes = total
 					du.Status.Progress.BytesDone = done
+					du.Status.Progress.IncrementalBytes = inc
 					if err := r.Update(ctx, du); err != nil {
 						logger.V(1).Info("Failed to update DataUpload progress", "error", err)
 					}
