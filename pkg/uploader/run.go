@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -118,6 +119,8 @@ func Run(ctx context.Context, logger logr.Logger) error {
 
 // LoadConfigFromEnv parses environment variables into UploaderConfig.
 func LoadConfigFromEnv() (*UploaderConfig, error) {
+	totalBytes, _ := strconv.ParseInt(os.Getenv(EnvTotalBytes), 10, 64)
+
 	config := &UploaderConfig{
 		PodName:      os.Getenv(EnvPodName),
 		PodNamespace: os.Getenv(EnvPodNamespace),
@@ -156,6 +159,7 @@ func LoadConfigFromEnv() (*UploaderConfig, error) {
 		DataUploadUID:      os.Getenv(EnvDataUploadUID),
 		VMBName:            os.Getenv(EnvVMBName),
 		VMBTName:           os.Getenv(EnvVMBTName),
+		TotalBytes:         totalBytes,
 		SourcePVCPath:      os.Getenv(EnvSourcePVCPath),
 	}
 
@@ -204,37 +208,8 @@ func uploadQcow2Files(
 	ctx context.Context, store velero.ObjectStore, config *UploaderConfig, k8sClient client.Client, logger logr.Logger,
 ) ([]CheckpointFile, error) {
 	var files []CheckpointFile
-	var totalBytes int64
 	var incrementalBytes int64
 	var bytesDone int64
-
-	// Calculate total PVC size (TotalBytes)
-	vm := &kubevirtcorev1.VirtualMachine{}
-	if err := k8sClient.Get(ctx, types.NamespacedName{Name: config.VMName, Namespace: config.VMNamespace}, vm); err == nil {
-		volumeMap := common.GetVolumeMapForVm(vm)
-		for _, pvcName := range volumeMap {
-			if pvcName == "" {
-				continue
-			}
-			pvc := &corev1.PersistentVolumeClaim{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: config.VMNamespace}, pvc); err == nil {
-				if pvc.Spec.Resources.Requests != nil {
-					storage := pvc.Spec.Resources.Requests[corev1.ResourceStorage]
-					if pvc.Spec.VolumeName != "" {
-						pv := &corev1.PersistentVolume{}
-						if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, pv); err == nil {
-							if pv.Spec.Capacity != nil {
-								if capacity, ok := pv.Spec.Capacity[corev1.ResourceStorage]; ok && capacity.Cmp(storage) > 0 {
-									storage = capacity
-								}
-							}
-						}
-					}
-					totalBytes += storage.Value()
-				}
-			}
-		}
-	}
 
 	// First pass: calculate total payload size (IncrementalBytes)
 	_ = filepath.WalkDir(config.SourcePVCPath, func(path string, d fs.DirEntry, err error) error {
@@ -246,13 +221,13 @@ func uploadQcow2Files(
 		return nil
 	})
 
-	if totalBytes == 0 {
-		totalBytes = incrementalBytes // Fallback if VM/PVC lookup failed
+	if config.TotalBytes == 0 {
+		config.TotalBytes = incrementalBytes // Fallback if env var was missing
 	}
 
 	reportProgress := func(currentDone int64) {
 		if config.PodName != "" && config.PodNamespace != "" {
-			patchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, totalBytes, incrementalBytes, currentDone, logger)
+			patchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, config.TotalBytes, incrementalBytes, currentDone, logger)
 		}
 	}
 
@@ -387,8 +362,7 @@ func resolveDiskNameFromVolumes(filename string, volumeMap map[string]string) st
 
 // updateVMIndex creates or updates the per-VM index.json file.
 // The archived parameter provides S3 paths for the VMB/VMBT JSON files
-// that were uploaded by archiveKubeResources — these are stored on the
-// checkpoint entry so the index always references valid objects.
+// that were uploaded by archiveKubeResources — these are stored on the checkpoint entry so the index always references valid objects.
 func updateVMIndex(
 	ctx context.Context, store velero.ObjectStore, k8sClient client.Client, config *UploaderConfig,
 	files []CheckpointFile, archived *archivedPaths, logger logr.Logger,

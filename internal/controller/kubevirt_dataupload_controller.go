@@ -1151,7 +1151,7 @@ func (r *KubeVirtDataUploadReconciler) handlePrepared(ctx context.Context, logge
 	}
 
 	// Build datamover pod config - now using OADP namespace and rebound PVC
-	podConfig, err := r.buildDatamoverPodConfig(du, bsl, vmb, vmRef, backupType, expectedBackupType, checkpointName, vmbtName)
+	podConfig, err := r.buildDatamoverPodConfig(du, bsl, vmb, vmRef, backupType, expectedBackupType, checkpointName, vmbtName, pvc.Spec.Resources.Requests[corev1.ResourceStorage])
 	if err != nil {
 		logger.Error(err, "Failed to build datamover pod config")
 		if err := r.updatePhase(ctx, du, velerov2alpha1.DataUploadPhaseFailed, fmt.Sprintf("Failed to build pod config: %v", err)); err != nil {
@@ -1287,11 +1287,12 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 				}
 
 				if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done || du.Status.IncrementalBytes != inc {
+					patch := client.MergeFrom(du.DeepCopy())
 					du.Status.Progress.TotalBytes = total
 					du.Status.Progress.BytesDone = done
 					du.Status.IncrementalBytes = inc
-					if err := r.Status().Update(ctx, du); err != nil {
-						logger.V(1).Info("Failed to update DataUpload progress", "error", err)
+					if err := r.Patch(ctx, du, patch); err != nil {
+						logger.Error(err, "Failed to patch DataUpload progress")
 					}
 				}
 			}
@@ -2208,6 +2209,7 @@ func (r *KubeVirtDataUploadReconciler) buildDatamoverPodConfig(
 	expectedBackupType string,
 	checkpointName string,
 	vmbtName string,
+	pvcSize resource.Quantity,
 ) (*DatamoverPodConfig, error) {
 	cfg, err := uploader.ExtractBSLConfig(bsl)
 	if err != nil {
@@ -2278,6 +2280,7 @@ func (r *KubeVirtDataUploadReconciler) buildDatamoverPodConfig(
 		VMBName:                        vmb.Name,
 		VMBTName:                       vmbtName,
 		SourcePVCName:                  "", // overridden by handlePrepared with the rebound PVC name
+		TotalBytes:                     pvcSize.Value(),
 		Labels:                         make(map[string]string),
 	}, nil
 }
