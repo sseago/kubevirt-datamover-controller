@@ -866,7 +866,7 @@ func (r *KubeVirtDataUploadReconciler) resolveBackupMode(ctx context.Context, lo
 //     up VMs without a guest agent, e.g. Cirros test VMs, without
 //     requiring a workload-specific annotation for every such VM.
 //
-// If the VMI can be fetched (not found, transient error, etc.), quiesce
+// If the VMI can't be fetched (not found, transient error, etc.), quiesce
 // is skipped -- the safe, crash-consistent default -- rather than risking a
 // backup failure from attempting to quiesce a VM whose agent state is
 // unknown.
@@ -1314,10 +1314,6 @@ func (r *KubeVirtDataUploadReconciler) syncProgressFromPod(ctx context.Context, 
 			inc, _ = strconv.ParseInt(incStr, 10, 64)
 		} else {
 			inc = total
-		}
-
-		if du.Status.Progress == nil {
-			du.Status.Progress = &velerov2alpha1.DataMoveOperationProgress{}
 		}
 
 		if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done || du.Status.IncrementalBytes != inc {
