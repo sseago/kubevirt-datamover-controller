@@ -26,8 +26,8 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/migtools/kubevirt-datamover-controller/pkg/common"
 	"github.com/migtools/kubevirt-datamover-controller/pkg/uploader"
