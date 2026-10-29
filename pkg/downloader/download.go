@@ -42,7 +42,8 @@ import (
 // equivalent loop), so a single in-flight download can't be interrupted, but
 // a canceled restore won't start any further downloads.
 func downloadCheckpointFiles(
-	ctx context.Context, store velero.ObjectStore, config *DownloaderConfig, files []uploader.CheckpointFile, k8sClient client.Client, logger logr.Logger,
+	ctx context.Context, store velero.ObjectStore, config *DownloaderConfig,
+	files []uploader.CheckpointFile, k8sClient client.Client, logger logr.Logger,
 ) ([]string, error) {
 	scratchDir := config.ScratchPath
 	absScratchDir, err := filepath.Abs(scratchDir)
@@ -96,7 +97,8 @@ func downloadCheckpointFiles(
 			return nil, errors.Join(fmt.Errorf("invalid checkpoint filename %q", file.Filename), cleanup())
 		}
 		localPath := filepath.Join(scratchDir, fmt.Sprintf("%0*d-%s", indexWidth, i, file.Filename))
-		if err := downloadOne(store, config.BSLBucket, file.ObjectPath, localPath, file.Size, &bytesDone, reportProgress); err != nil {
+		err := downloadOne(store, config.BSLBucket, file.ObjectPath, localPath, file.Size, &bytesDone, reportProgress)
+		if err != nil {
 			return nil, errors.Join(fmt.Errorf("failed to download checkpoint file %q: %w", file.ObjectPath, err), cleanup())
 		}
 		localPaths = append(localPaths, localPath)
@@ -108,7 +110,10 @@ func downloadCheckpointFiles(
 	return localPaths, nil
 }
 
-func downloadOne(store velero.ObjectStore, bucket, objectPath, localPath string, size int64, bytesDone *int64, reportProgress func(int64)) error {
+func downloadOne(
+	store velero.ObjectStore, bucket, objectPath, localPath string,
+	size int64, bytesDone *int64, reportProgress func(int64),
+) error {
 	if size < 0 {
 		return fmt.Errorf("invalid declared size %d for object %q", size, objectPath)
 	}
