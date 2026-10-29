@@ -2087,7 +2087,7 @@ func (r *KubeVirtDataDownloadReconciler) checkConcurrentDataMoverLimit(ctx conte
 	// in Reconcile, before dispatch reaches handlePrepared). A genuinely stuck
 	// higher-priority peer still ages out normally (its own AcceptedTimestamp
 	// is untouched by this), freeing this DD's slot once that peer times out
-	// or completes -- so this can can't cause indefinite starvation, only push the
+	// or completes -- so this can't cause indefinite starvation, only push the
 	// deadline out for as long as this DD is legitimately waiting its turn.
 	if dd.Status.AcceptedTimestamp != nil {
 		// Re-fetch immediately before writing: this path runs every
