@@ -229,7 +229,8 @@ func uploadQcow2Files(
 
 	reportProgress := func(currentDone int64) {
 		if config.PodName != "" && config.PodNamespace != "" {
-			common.PatchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, config.TotalBytes, incrementalBytes, currentDone, logger)
+			common.PatchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace,
+				config.TotalBytes, incrementalBytes, currentDone, logger)
 		}
 	}
 
@@ -407,7 +408,8 @@ func updateVMIndex(
 			if pvc.Spec.VolumeName != "" {
 				pv := &corev1.PersistentVolume{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, pv); err != nil {
-					return fmt.Errorf("failed to get bound PV %s for PVC %s: %w", pvc.Spec.VolumeName, pvcName, err)
+					return fmt.Errorf("failed to get bound PV %s for PVC %s: %w",
+						pvc.Spec.VolumeName, pvcName, err)
 				}
 				capacity, ok := pv.Spec.Capacity[corev1.ResourceStorage]
 				if !ok {
