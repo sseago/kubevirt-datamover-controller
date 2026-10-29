@@ -43,6 +43,22 @@ This controller enables **incremental qcow2-based VM backups** using KubeVirt/li
 
 For full design details, see the [OADP KubeVirt Datamover Design Document](https://github.com/openshift/oadp-operator/blob/oadp-dev/docs/design/kubevirt-datamover.md).
 
+## Progress Reporting
+
+The controller reports real-time progress on `DataUpload` and `DataDownload` CRs. Because the KubeVirt datamover transfers `.qcow2` files rather than scanning filesystems like Velero's built-in Kopia datamover, the progress fields represent slightly different metrics:
+
+**DataUpload (Backup)**
+- `Status.Progress.TotalBytes`: The raw capacity of the source PVCs being backed up.
+- `Status.IncrementalBytes`: The actual size of the `.qcow2` payload being transferred to S3. For incremental backups, this will be significantly smaller than `TotalBytes`, reflecting the efficiency of CBT.
+- `Status.Progress.BytesDone`: The number of `.qcow2` bytes successfully uploaded to S3 so far.
+
+**DataDownload (Restore)**
+- `Status.Progress.TotalBytes`: The total size of all `.qcow2` files in the checkpoint chain that need to be downloaded from S3.
+- `Status.Progress.BytesDone`: The number of `.qcow2` bytes successfully downloaded so far.
+- *(Note: `IncrementalBytes` is not populated during restore, as the entire chain must be downloaded to reconstruct the flat raw disk).*
+
+*Quirk:* During a restore, after `BytesDone` reaches `TotalBytes` (100%), the progress bar will pause while the downloader pod runs `qemu-img rebase` and `qemu-img commit` to flatten the chain into a raw image. This reconstruction phase can take time, but the progress will remain at 100% until it finishes.
+
 ## Prerequisites
 
 - OpenShift cluster with OADP operator installed
