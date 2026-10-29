@@ -229,7 +229,7 @@ func uploadQcow2Files(
 
 	reportProgress := func(currentDone int64) {
 		if config.PodName != "" && config.PodNamespace != "" {
-			patchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, config.TotalBytes, incrementalBytes, currentDone, logger)
+			common.PatchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, config.TotalBytes, incrementalBytes, currentDone, logger)
 		}
 	}
 
@@ -269,7 +269,7 @@ func uploadQcow2Files(
 
 		logger.Info("Uploading file", "filename", d.Name(), "size", info.Size(), "objectPath", objectPath)
 
-		progressReader := &ProgressReader{
+		progressReader := &common.ProgressReader{
 			Reader:     file,
 			UpdateFreq: 5 * time.Second,
 			Reporter: func(read int64) {
@@ -304,21 +304,6 @@ func uploadQcow2Files(
 	}
 
 	return files, nil
-}
-
-func patchPodProgress(ctx context.Context, k8sClient client.Client, name, namespace string, total, inc, done int64, logger logr.Logger) {
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-	}
-	patch := client.RawPatch(types.MergePatchType, []byte(fmt.Sprintf(
-		`{"metadata":{"annotations":{"kubevirt-datamover.io/total-bytes":"%d","kubevirt-datamover.io/incremental-bytes":"%d","kubevirt-datamover.io/bytes-done":"%d"}}}`,
-		total, inc, done)))
-	if err := k8sClient.Patch(ctx, pod, patch); err != nil {
-		logger.Error(err, "Failed to patch pod progress annotations")
-	}
 }
 
 // extractDiskName extracts the disk name from a qcow2 filename.
