@@ -42,7 +42,10 @@ func (pr *ProgressReader) report(force bool) {
 }
 
 // PatchPodProgress updates the datamover pod with progress annotations.
-func PatchPodProgress(ctx context.Context, k8sClient client.Client, name, namespace string, total, inc, done int64, logger logr.Logger) {
+func PatchPodProgress(
+	ctx context.Context, k8sClient client.Client, name, namespace string,
+	total, inc, done int64, logger logr.Logger,
+) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
