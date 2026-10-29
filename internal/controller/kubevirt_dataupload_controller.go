@@ -639,7 +639,7 @@ func (r *KubeVirtDataUploadReconciler) handleAccepted(ctx context.Context, logge
 // conditionComplete is KubeVirt nightly (v1.20.0+) virt-controller's renamed
 // replacement for VirtualMachineBackup's "Done" condition type. Our vendored
 // kubevirt.io/api (v1.8.0-alpha.0) predates the rename and has no
-// ConditionComplete constant of its own, so it's declared here as the raw
+// ConditionComplete constant of its own, so it is declared here as the raw
 // string literal virt-controller actually emits. Without recognizing both
 // names, evaluateVMBackupStatus/isVMBTerminal never see doneCond populated
 // against a nightly cluster and loop "VirtualMachineBackup in progress,
@@ -1160,7 +1160,7 @@ func (r *KubeVirtDataUploadReconciler) handlePrepared(ctx context.Context, logge
 		return ctrl.Result{}, nil
 	}
 
-	rawSize := r.getRawBackupSize(ctx, logger, du, vmRef.Namespace)
+	rawSize := r.getRawBackupSize(ctx, du, vmRef.Namespace)
 
 	// Build datamover pod config - now using OADP namespace and rebound PVC
 	podConfig, err := r.buildDatamoverPodConfig(du, bsl, vmb, vmRef, backupType, expectedBackupType, checkpointName, vmbtName, rawSize)
@@ -2343,7 +2343,7 @@ func (r *KubeVirtDataUploadReconciler) findPodForDataUpload(ctx context.Context,
 }
 
 // getRawBackupSize determines the raw capacity of the source PVCs without any overhead.
-func (r *KubeVirtDataUploadReconciler) getRawBackupSize(ctx context.Context, logger logr.Logger, du *velerov2alpha1.DataUpload, namespace string) int64 {
+func (r *KubeVirtDataUploadReconciler) getRawBackupSize(ctx context.Context, du *velerov2alpha1.DataUpload, namespace string) int64 {
 	sourceNamespace := du.Spec.SourceNamespace
 	if sourceNamespace == "" {
 		sourceNamespace = namespace
