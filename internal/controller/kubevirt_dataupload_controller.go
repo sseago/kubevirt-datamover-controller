@@ -1150,19 +1150,20 @@ func (r *KubeVirtDataUploadReconciler) handlePrepared(ctx context.Context, logge
 		return ctrl.Result{}, nil
 	}
 
-	// Fetch the rebound PVC to get its size for TotalBytes.
-	// We cannot use the original temp PVC here because the rebind process deletes it.
+	// Ensure the rebound PVC exists before proceeding
 	if err := r.Get(ctx, types.NamespacedName{Name: reboundPVCName, Namespace: podNamespace}, reboundPVC); err != nil {
-		err := fmt.Errorf("failed to get rebound PVC %s to determine size: %w", reboundPVCName, err)
-		logger.Error(err, "Cannot determine PVC size")
+		err := fmt.Errorf("failed to get rebound PVC %s: %w", reboundPVCName, err)
+		logger.Error(err, "Rebound PVC not found")
 		if updateErr := r.updatePhase(ctx, du, velerov2alpha1.DataUploadPhaseFailed, err.Error()); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 		return ctrl.Result{}, nil
 	}
 
+	rawSize := r.getRawBackupSize(ctx, logger, du, vmRef.Namespace)
+
 	// Build datamover pod config - now using OADP namespace and rebound PVC
-	podConfig, err := r.buildDatamoverPodConfig(du, bsl, vmb, vmRef, backupType, expectedBackupType, checkpointName, vmbtName, reboundPVC.Spec.Resources.Requests[corev1.ResourceStorage])
+	podConfig, err := r.buildDatamoverPodConfig(du, bsl, vmb, vmRef, backupType, expectedBackupType, checkpointName, vmbtName, rawSize)
 	if err != nil {
 		logger.Error(err, "Failed to build datamover pod config")
 		if err := r.updatePhase(ctx, du, velerov2alpha1.DataUploadPhaseFailed, fmt.Sprintf("Failed to build pod config: %v", err)); err != nil {
@@ -2233,7 +2234,7 @@ func (r *KubeVirtDataUploadReconciler) buildDatamoverPodConfig(
 	expectedBackupType string,
 	checkpointName string,
 	vmbtName string,
-	pvcSize resource.Quantity,
+	rawSize int64,
 ) (*DatamoverPodConfig, error) {
 	cfg, err := uploader.ExtractBSLConfig(bsl)
 	if err != nil {
@@ -2304,7 +2305,7 @@ func (r *KubeVirtDataUploadReconciler) buildDatamoverPodConfig(
 		VMBName:                        vmb.Name,
 		VMBTName:                       vmbtName,
 		SourcePVCName:                  "", // overridden by handlePrepared with the rebound PVC name
-		TotalBytes:                     pvcSize.Value(),
+		TotalBytes:                     rawSize,
 		Labels:                         make(map[string]string),
 	}, nil
 }
@@ -2343,4 +2344,50 @@ func (r *KubeVirtDataUploadReconciler) lookupCheckpointFromBSL(ctx context.Conte
 // findPodForDataUpload finds the unique datamover pod associated with a DataUpload.
 func (r *KubeVirtDataUploadReconciler) findPodForDataUpload(ctx context.Context, du *velerov2alpha1.DataUpload, namespace string) (*corev1.Pod, error) {
 	return findPodByUID(ctx, r.Client, r.APIReader, common.LabelDataUploadUID, string(du.UID), namespace)
+}
+
+// getRawBackupSize determines the raw capacity of the source PVCs without any overhead.
+func (r *KubeVirtDataUploadReconciler) getRawBackupSize(ctx context.Context, logger logr.Logger, du *velerov2alpha1.DataUpload, namespace string) int64 {
+	sourceNamespace := du.Spec.SourceNamespace
+	if sourceNamespace == "" {
+		sourceNamespace = namespace
+	}
+
+	vmRef, err := common.GetVMReference(du)
+	if err == nil {
+		vm := &kubevirtcorev1.VirtualMachine{}
+		if err := r.Get(ctx, types.NamespacedName{Name: vmRef.Name, Namespace: vmRef.Namespace}, vm); err == nil {
+			pvcNames := common.GetVolumesForVm(vm)
+			if len(pvcNames) > 0 {
+				totalCapacity := resource.Quantity{}
+				for _, pvcName := range pvcNames {
+					pvc := &corev1.PersistentVolumeClaim{}
+					if err := r.Get(ctx, types.NamespacedName{Name: pvcName, Namespace: vmRef.Namespace}, pvc); err == nil {
+						if capacity, ok := pvc.Status.Capacity[corev1.ResourceStorage]; ok {
+							totalCapacity.Add(capacity)
+						} else if req, ok := pvc.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+							totalCapacity.Add(req)
+						}
+					}
+				}
+				if !totalCapacity.IsZero() {
+					return totalCapacity.Value()
+				}
+			}
+		}
+	}
+
+	sourcePVCName := du.Spec.SourcePVC
+	if sourcePVCName != "" {
+		sourcePVC := &corev1.PersistentVolumeClaim{}
+		if err := r.Get(ctx, types.NamespacedName{Name: sourcePVCName, Namespace: sourceNamespace}, sourcePVC); err == nil {
+			if capacity, ok := sourcePVC.Status.Capacity[corev1.ResourceStorage]; ok {
+				return capacity.Value()
+			} else if req, ok := sourcePVC.Spec.Resources.Requests[corev1.ResourceStorage]; ok {
+				return req.Value()
+			}
+		}
+	}
+
+	return resource.MustParse(DefaultTempPVCSize).Value()
 }

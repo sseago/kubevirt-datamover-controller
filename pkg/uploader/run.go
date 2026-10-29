@@ -221,7 +221,9 @@ func uploadQcow2Files(
 		return nil
 	})
 
-	if config.TotalBytes == 0 {
+	if strings.ToLower(config.BackupType) == BackupTypeFull {
+		config.TotalBytes = incrementalBytes
+	} else if config.TotalBytes == 0 {
 		config.TotalBytes = incrementalBytes // Fallback if env var was missing
 	}
 
