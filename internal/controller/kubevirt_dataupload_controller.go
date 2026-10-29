@@ -1246,6 +1246,8 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 	case corev1.PodSucceeded:
 		logger.Info("Datamover pod completed successfully", "pod", pod.Name)
 
+		r.syncProgressFromPod(ctx, logger, du, pod)
+
 		if du.Annotations[common.AnnotationDatamoverPodSucceeded] != bslValidatedValue {
 			r.emitPodLogs(ctx, logger, pod)
 			if err := r.markDatamoverPodSucceeded(ctx, du); err != nil {
@@ -1269,6 +1271,8 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 		failureMessage := extractPodFailureMessage(pod)
 		logger.Error(nil, "Datamover pod failed", "pod", pod.Name, "message", failureMessage)
 
+		r.syncProgressFromPod(ctx, logger, du, pod)
+
 		r.emitPodLogs(ctx, logger, pod)
 
 		// Skip cleanup on failure to preserve resources for debugging.
@@ -1280,34 +1284,7 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 		return ctrl.Result{}, nil
 
 	case corev1.PodPending, corev1.PodRunning:
-		// Read progress from pod annotations
-		if pod.Annotations != nil {
-			totalStr := pod.Annotations["kubevirt-datamover.io/total-bytes"]
-			incStr := pod.Annotations["kubevirt-datamover.io/incremental-bytes"]
-			doneStr := pod.Annotations["kubevirt-datamover.io/bytes-done"]
-
-			if totalStr != "" && doneStr != "" {
-				total, _ := strconv.ParseInt(totalStr, 10, 64)
-				done, _ := strconv.ParseInt(doneStr, 10, 64)
-
-				var inc int64
-				if incStr != "" {
-					inc, _ = strconv.ParseInt(incStr, 10, 64)
-				} else {
-					inc = total
-				}
-
-				if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done || du.Status.IncrementalBytes != inc {
-					patch := client.MergeFrom(du.DeepCopy())
-					du.Status.Progress.TotalBytes = total
-					du.Status.Progress.BytesDone = done
-					du.Status.IncrementalBytes = inc
-					if err := r.Patch(ctx, du, patch); err != nil {
-						logger.Error(err, "Failed to patch DataUpload progress")
-					}
-				}
-			}
-		}
+		r.syncProgressFromPod(ctx, logger, du, pod)
 
 		logger.V(1).Info("Datamover pod still running", "pod", pod.Name, "phase", pod.Status.Phase)
 		return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
@@ -1315,6 +1292,42 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 	default:
 		logger.Info("Datamover pod in unknown phase", "pod", pod.Name, "phase", pod.Status.Phase)
 		return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+	}
+}
+
+// syncProgressFromPod reads progress annotations from the datamover pod and updates the DataUpload CR.
+func (r *KubeVirtDataUploadReconciler) syncProgressFromPod(ctx context.Context, logger logr.Logger, du *velerov2alpha1.DataUpload, pod *corev1.Pod) {
+	if pod.Annotations == nil {
+		return
+	}
+	totalStr := pod.Annotations["kubevirt-datamover.io/total-bytes"]
+	incStr := pod.Annotations["kubevirt-datamover.io/incremental-bytes"]
+	doneStr := pod.Annotations["kubevirt-datamover.io/bytes-done"]
+
+	if totalStr != "" && doneStr != "" {
+		total, _ := strconv.ParseInt(totalStr, 10, 64)
+		done, _ := strconv.ParseInt(doneStr, 10, 64)
+
+		var inc int64
+		if incStr != "" {
+			inc, _ = strconv.ParseInt(incStr, 10, 64)
+		} else {
+			inc = total
+		}
+
+		if du.Status.Progress == nil {
+			du.Status.Progress = &velerov2alpha1.DataMoveOperationProgress{}
+		}
+
+		if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done || du.Status.IncrementalBytes != inc {
+			patch := client.MergeFrom(du.DeepCopy())
+			du.Status.Progress.TotalBytes = total
+			du.Status.Progress.BytesDone = done
+			du.Status.IncrementalBytes = inc
+			if err := r.Patch(ctx, du, patch); err != nil {
+				logger.Error(err, "Failed to patch DataUpload progress")
+			}
+		}
 	}
 }
 
