@@ -1316,10 +1316,6 @@ func (r *KubeVirtDataUploadReconciler) syncProgressFromPod(ctx context.Context, 
 			inc = total
 		}
 
-		if du.Status.Progress == nil {
-			du.Status.Progress = &velerov2alpha1.DataMoveOperationProgress{}
-		}
-
 		if du.Status.Progress.TotalBytes != total || du.Status.Progress.BytesDone != done || du.Status.IncrementalBytes != inc {
 			patch := client.MergeFrom(du.DeepCopy())
 			du.Status.Progress.TotalBytes = total
