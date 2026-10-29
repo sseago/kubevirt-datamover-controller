@@ -350,7 +350,8 @@ func resolveDiskNameFromVolumes(filename string, volumeMap map[string]string) st
 
 // updateVMIndex creates or updates the per-VM index.json file.
 // The archived parameter provides S3 paths for the VMB/VMBT JSON files
-// that were uploaded by archiveKubeResources — these are stored on the checkpoint entry so the index always references valid objects.
+// that were uploaded by archiveKubeResources — these are stored on the
+// checkpoint entry so the index always references valid objects.
 func updateVMIndex(
 	ctx context.Context, store velero.ObjectStore, k8sClient client.Client, config *UploaderConfig,
 	files []CheckpointFile, archived *archivedPaths, logger logr.Logger,
