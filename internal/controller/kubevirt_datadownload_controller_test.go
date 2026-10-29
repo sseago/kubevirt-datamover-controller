@@ -3042,375 +3042,373 @@ func TestHandlePreparedDataDownload_BlockMode(t *testing.T) {
 	}
 }
 
-func TestHandleInProgressDataDownload(t *testing.T) {
-	t.Run("already provisioned in a prior reconcile completes idempotently without a pod", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
+func TestHandleInProgressDataDownload_AlreadyProvisioned(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
 
-		// Simulates: a prior reconcile's rebindPVToNamespace succeeded (scratch PVC
-		// deleted, PV's claimRef patched to point at the target PVC, PV labeled
-		// with our UID) but the subsequent updatePhase(Completed) failed to
-		// persist, so this reconcile starts from InProgress again with no pod and
-		// no scratch PVC left. The target PVC's own Status.Phase is deliberately
-		// left Pending (not Bound) to prove isRestoreAlreadyProvisioned detects
-		// the committed rebind via the PV's claimRef, not the PVC's Bound status
-		// (which the Kubernetes PV controller only sets asynchronously). Both
-		// UIDs are set to the same real, non-empty value so this exercises the
-		// actual claimRef-UID-vs-live-PVC-UID comparison, not the empty-UID
-		// legacy fallback (see the mismatch test below for that branch).
-		f.targetPVC.UID = types.UID("target-pvc-uid")
-		f.dd.Annotations[AnnotationDownloaderPodSucceeded] = downloaderPodSucceededValue
-		reboundPV := &corev1.PersistentVolume{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   "pv-already-rebound",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+	// Simulates: a prior reconcile's rebindPVToNamespace succeeded (scratch PVC
+	// deleted, PV's claimRef patched to point at the target PVC, PV labeled
+	// with our UID) but the subsequent updatePhase(Completed) failed to
+	// persist, so this reconcile starts from InProgress again with no pod and
+	// no scratch PVC left. The target PVC's own Status.Phase is deliberately
+	// left Pending (not Bound) to prove isRestoreAlreadyProvisioned detects
+	// the committed rebind via the PV's claimRef, not the PVC's Bound status
+	// (which the Kubernetes PV controller only sets asynchronously). Both
+	// UIDs are set to the same real, non-empty value so this exercises the
+	// actual claimRef-UID-vs-live-PVC-UID comparison, not the empty-UID
+	// legacy fallback (see the mismatch test below for that branch).
+	f.targetPVC.UID = types.UID("target-pvc-uid")
+	f.dd.Annotations[AnnotationDownloaderPodSucceeded] = downloaderPodSucceededValue
+	reboundPV := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "pv-already-rebound",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Spec: corev1.PersistentVolumeSpec{
+			ClaimRef: &corev1.ObjectReference{
+				Kind:      "PersistentVolumeClaim",
+				Name:      f.targetPVC.Name,
+				Namespace: f.targetPVC.Namespace,
+				UID:       f.targetPVC.UID,
 			},
-			Spec: corev1.PersistentVolumeSpec{
-				ClaimRef: &corev1.ObjectReference{
-					Kind:      "PersistentVolumeClaim",
-					Name:      f.targetPVC.Name,
-					Namespace: f.targetPVC.Namespace,
-					UID:       f.targetPVC.UID,
-				},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, f.targetPVC, reboundPV).Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+
+	if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updated velerov2alpha1.DataDownload
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated); err != nil {
+		t.Fatalf("failed to get DataDownload: %v", err)
+	}
+	if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseCompleted {
+		t.Errorf("phase = %q, want %q (message: %s)", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseCompleted, updated.Status.Message)
+	}
+}
+
+func TestHandleInProgressDataDownload_ClaimRefUIDMismatch(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
+	f.dd.Annotations[AnnotationDownloaderPodSucceeded] = downloaderPodSucceededValue
+
+	// The claimRef names the right PVC/namespace, but a different UID -- as if
+	// the target PVC had been deleted and recreated after this PV's claimRef was
+	// set. isRestoreAlreadyProvisioned must not treat this as the same restore.
+	reboundPV := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "pv-already-rebound",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Spec: corev1.PersistentVolumeSpec{
+			ClaimRef: &corev1.ObjectReference{
+				Kind:      "PersistentVolumeClaim",
+				Name:      f.targetPVC.Name,
+				Namespace: f.targetPVC.Namespace,
+				UID:       types.UID("some-other-uid"),
 			},
-		}
+		},
+	}
+	f.targetPVC.UID = types.UID("actual-target-pvc-uid")
 
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, f.targetPVC, reboundPV).Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, f.targetPVC, reboundPV).Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
 
-		if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
+	done, err := r.isRestoreAlreadyProvisioned(context.Background(), f.dd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if done {
+		t.Error("expected isRestoreAlreadyProvisioned = false for a claimRef UID mismatch")
+	}
+}
 
-		var updated velerov2alpha1.DataDownload
-		if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated); err != nil {
-			t.Fatalf("failed to get DataDownload: %v", err)
-		}
-		if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseCompleted {
-			t.Errorf("phase = %q, want %q (message: %s)", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseCompleted, updated.Status.Message)
-		}
-	})
+func TestHandleInProgressDataDownload_SkipsPVLookupWhenPodNotSucceeded(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
 
-	t.Run("claimRef UID mismatch does not count as already provisioned", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
-		f.dd.Annotations[AnnotationDownloaderPodSucceeded] = downloaderPodSucceededValue
-
-		// The claimRef names the right PVC/namespace, but a different UID -- as if
-		// the target PVC had been deleted and recreated after this PV's claimRef was
-		// set. isRestoreAlreadyProvisioned must not treat this as the same restore.
-		reboundPV := &corev1.PersistentVolume{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   "pv-already-rebound",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+	// A matching, already-provisioned PV is present, but AnnotationDownloaderPodSucceeded
+	// is deliberately left unset: the PV's claimRef can only ever have been set by
+	// rebindPVToNamespace, which never runs before that annotation is persisted (see
+	// its own doc comment), so this scenario cannot occur for a real DataDownload --
+	// but it proves the guard short-circuits on the annotation rather than reaching
+	// the PV list at all.
+	reboundPV := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "pv-already-rebound",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Spec: corev1.PersistentVolumeSpec{
+			ClaimRef: &corev1.ObjectReference{
+				Kind:      "PersistentVolumeClaim",
+				Name:      f.targetPVC.Name,
+				Namespace: f.targetPVC.Namespace,
+				UID:       f.targetPVC.UID,
 			},
-			Spec: corev1.PersistentVolumeSpec{
-				ClaimRef: &corev1.ObjectReference{
-					Kind:      "PersistentVolumeClaim",
-					Name:      f.targetPVC.Name,
-					Namespace: f.targetPVC.Namespace,
-					UID:       types.UID("some-other-uid"),
-				},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, f.targetPVC, reboundPV).Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+
+	done, err := r.isRestoreAlreadyProvisioned(context.Background(), f.dd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if done {
+		t.Error("expected isRestoreAlreadyProvisioned = false when AnnotationDownloaderPodSucceeded isn't set, regardless of a matching PV existing")
+	}
+}
+
+func TestHandleInProgressDataDownload_PodFailed(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "downloader-pod", Namespace: "openshift-adp",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodFailed,
+			ContainerStatuses: []corev1.ContainerStatus{
+				{State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Message: "qemu-img failed"}}},
 			},
-		}
-		f.targetPVC.UID = types.UID("actual-target-pvc-uid")
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, pod).Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
 
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, f.targetPVC, reboundPV).Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+	if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var updated velerov2alpha1.DataDownload
+	_ = fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated)
+	if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseFailed {
+		t.Errorf("phase = %q, want %q", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseFailed)
+	}
+	if updated.Status.Message == "" {
+		t.Error("expected non-empty failure message")
+	}
+}
 
-		done, err := r.isRestoreAlreadyProvisioned(context.Background(), f.dd)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if done {
-			t.Error("expected isRestoreAlreadyProvisioned = false for a claimRef UID mismatch")
-		}
-	})
+func TestHandleInProgressDataDownload_PodRunning(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "downloader-pod", Namespace: "openshift-adp",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, pod).Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
 
-	t.Run("skips the PV lookup entirely when the downloader pod hasn't succeeded yet", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
+	result, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter == 0 {
+		t.Error("expected requeue while pod is running")
+	}
+}
 
-		// A matching, already-provisioned PV is present, but AnnotationDownloaderPodSucceeded
-		// is deliberately left unset: the PV's claimRef can only ever have been set by
-		// rebindPVToNamespace, which never runs before that annotation is persisted (see
-		// its own doc comment), so this scenario cannot occur for a real DataDownload --
-		// but it proves the guard short-circuits on the annotation rather than reaching
-		// the PV list at all.
-		reboundPV := &corev1.PersistentVolume{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   "pv-already-rebound",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+func TestHandleInProgressDataDownload_PodSucceeded(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
+
+	// Target PVC starts Pending/unbound (the realistic Velero-created placeholder
+	// state) so this test exercises the real validateExistingPVCForBind mutation path
+	// (retain, delete scratch PVC, patch claimRef, wait for bound) rather than
+	// the already-bound idempotent short-circuit.
+	origInterval, origTimeout := pvRebindPollInterval, pvRebindTimeout
+	pvRebindPollInterval = 10 * time.Millisecond
+	pvRebindTimeout = 2 * time.Second
+	defer func() {
+		pvRebindPollInterval = origInterval
+		pvRebindTimeout = origTimeout
+	}()
+
+	scratchPV := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pv-scratch"},
+		Spec: corev1.PersistentVolumeSpec{
+			Capacity:                      corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+			AccessModes:                   []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
+			StorageClassName:              "standard",
+			VolumeMode:                    new(corev1.PersistentVolumeFilesystem),
+		},
+	}
+	scratchPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "scratch-pvc-1", Namespace: "openshift-adp",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			VolumeName:       "pv-scratch",
+			StorageClassName: new("standard"),
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
 			},
-			Spec: corev1.PersistentVolumeSpec{
-				ClaimRef: &corev1.ObjectReference{
-					Kind:      "PersistentVolumeClaim",
-					Name:      f.targetPVC.Name,
-					Namespace: f.targetPVC.Namespace,
-					UID:       f.targetPVC.UID,
-				},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "downloader-pod", Namespace: "openshift-adp",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(f.dd, f.targetPVC, scratchPV, scratchPVC, pod).
+		Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+
+	// Fake clients don't run the real Kubernetes PV binder, so simulate it.
+	defer startFakeBinder(t, fakeClient, scratchPV, f.targetPVC, pvRebindTimeout)()
+
+	if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updated velerov2alpha1.DataDownload
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated); err != nil {
+		t.Fatalf("failed to get DataDownload: %v", err)
+	}
+	if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseCompleted {
+		t.Fatalf("phase = %q, want %q (message: %s)", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseCompleted, updated.Status.Message)
+	}
+	if updated.Annotations[AnnotationDownloaderPodSucceeded] != "true" {
+		t.Errorf("expected %s annotation to be persisted before the pod delete", AnnotationDownloaderPodSucceeded)
+	}
+
+	var pv corev1.PersistentVolume
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "pv-scratch"}, &pv); err != nil {
+		t.Fatalf("failed to get PV: %v", err)
+	}
+	if pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.Name != f.targetPVC.Name || pv.Spec.ClaimRef.Namespace != f.targetPVC.Namespace {
+		t.Errorf("PV claimRef = %+v, want %s/%s", pv.Spec.ClaimRef, f.targetPVC.Namespace, f.targetPVC.Name)
+	}
+
+	var pods corev1.PodList
+	_ = fakeClient.List(context.Background(), &pods)
+	if len(pods.Items) != 0 {
+		t.Errorf("expected downloader pod to be cleaned up after completion, found %d", len(pods.Items))
+	}
+}
+
+func TestHandleInProgressDataDownload_PodAbsentWithSuccessMarker(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
+
+	// Same rebind fixtures as the pod-succeeded case above, but the pod is
+	// already gone and the DataDownload carries the success marker -- the state
+	// a retry reconcile sees after a prior pass persisted the marker, deleted
+	// the pod, then errored on the strict still-terminating cleanup check. The
+	// pod's absence must resume the rebind, not fail as "Downloader pod not found".
+	origInterval, origTimeout := pvRebindPollInterval, pvRebindTimeout
+	pvRebindPollInterval = 10 * time.Millisecond
+	pvRebindTimeout = 2 * time.Second
+	defer func() {
+		pvRebindPollInterval = origInterval
+		pvRebindTimeout = origTimeout
+	}()
+
+	if f.dd.Annotations == nil {
+		f.dd.Annotations = map[string]string{}
+	}
+	f.dd.Annotations[AnnotationDownloaderPodSucceeded] = "true"
+
+	scratchPV := &corev1.PersistentVolume{
+		ObjectMeta: metav1.ObjectMeta{Name: "pv-scratch"},
+		Spec: corev1.PersistentVolumeSpec{
+			Capacity:                      corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
+			AccessModes:                   []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
+			StorageClassName:              "standard",
+			VolumeMode:                    new(corev1.PersistentVolumeFilesystem),
+		},
+	}
+	scratchPVC := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "scratch-pvc-1", Namespace: "openshift-adp",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			VolumeName:       "pv-scratch",
+			StorageClassName: new("standard"),
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
 			},
-		}
+		},
+		Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
+	}
 
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, f.targetPVC, reboundPV).Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(f.dd, f.targetPVC, scratchPV, scratchPVC).
+		Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
 
-		done, err := r.isRestoreAlreadyProvisioned(context.Background(), f.dd)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if done {
-			t.Error("expected isRestoreAlreadyProvisioned = false when AnnotationDownloaderPodSucceeded isn't set, regardless of a matching PV existing")
-		}
-	})
+	defer startFakeBinder(t, fakeClient, scratchPV, f.targetPVC, pvRebindTimeout)()
 
-	t.Run("pod failed transitions to Failed with message", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "downloader-pod", Namespace: "openshift-adp",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+	if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var updated velerov2alpha1.DataDownload
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated); err != nil {
+		t.Fatalf("failed to get DataDownload: %v", err)
+	}
+	if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseCompleted {
+		t.Fatalf("phase = %q, want %q (message: %s)", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseCompleted, updated.Status.Message)
+	}
+
+	var pv corev1.PersistentVolume
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "pv-scratch"}, &pv); err != nil {
+		t.Fatalf("failed to get PV: %v", err)
+	}
+	if pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.Name != f.targetPVC.Name || pv.Spec.ClaimRef.Namespace != f.targetPVC.Namespace {
+		t.Errorf("PV claimRef = %+v, want %s/%s", pv.Spec.ClaimRef, f.targetPVC.Namespace, f.targetPVC.Name)
+	}
+}
+
+func TestHandleInProgressDataDownload_SyncsProgress(t *testing.T) {
+	f := newDDTestFixture(t)
+	scheme := ddScheme()
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "downloader-pod", Namespace: "openshift-adp",
+			Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
+			Annotations: map[string]string{
+				"kubevirt-datamover.io/total-bytes": "2048",
+				"kubevirt-datamover.io/bytes-done":  "1024",
 			},
-			Status: corev1.PodStatus{
-				Phase: corev1.PodFailed,
-				ContainerStatuses: []corev1.ContainerStatus{
-					{State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Message: "qemu-img failed"}}},
-				},
-			},
-		}
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, pod).Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, pod).Build()
+	r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
 
-		if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		var updated velerov2alpha1.DataDownload
-		_ = fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated)
-		if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseFailed {
-			t.Errorf("phase = %q, want %q", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseFailed)
-		}
-		if updated.Status.Message == "" {
-			t.Error("expected non-empty failure message")
-		}
-	})
+	if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
-	t.Run("pod running requeues", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "downloader-pod", Namespace: "openshift-adp",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		}
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, pod).Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
+	var updated velerov2alpha1.DataDownload
+	_ = fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated)
 
-		result, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if result.RequeueAfter == 0 {
-			t.Error("expected requeue while pod is running")
-		}
-	})
-
-	t.Run("pod succeeded rebinds scratch volume to target PVC and completes", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
-
-		// Target PVC starts Pending/unbound (the realistic Velero-created placeholder
-		// state) so this test exercises the real validateExistingPVCForBind mutation path
-		// (retain, delete scratch PVC, patch claimRef, wait for bound) rather than
-		// the already-bound idempotent short-circuit.
-		origInterval, origTimeout := pvRebindPollInterval, pvRebindTimeout
-		pvRebindPollInterval = 10 * time.Millisecond
-		pvRebindTimeout = 2 * time.Second
-		defer func() {
-			pvRebindPollInterval = origInterval
-			pvRebindTimeout = origTimeout
-		}()
-
-		scratchPV := &corev1.PersistentVolume{
-			ObjectMeta: metav1.ObjectMeta{Name: "pv-scratch"},
-			Spec: corev1.PersistentVolumeSpec{
-				Capacity:                      corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-				AccessModes:                   []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
-				StorageClassName:              "standard",
-				VolumeMode:                    new(corev1.PersistentVolumeFilesystem),
-			},
-		}
-		scratchPVC := &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "scratch-pvc-1", Namespace: "openshift-adp",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				VolumeName:       "pv-scratch",
-				StorageClassName: new("standard"),
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-				},
-			},
-			Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
-		}
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "downloader-pod", Namespace: "openshift-adp",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodSucceeded},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(f.dd, f.targetPVC, scratchPV, scratchPVC, pod).
-			Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
-
-		// Fake clients don't run the real Kubernetes PV binder, so simulate it.
-		defer startFakeBinder(t, fakeClient, scratchPV, f.targetPVC, pvRebindTimeout)()
-
-		if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		var updated velerov2alpha1.DataDownload
-		if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated); err != nil {
-			t.Fatalf("failed to get DataDownload: %v", err)
-		}
-		if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseCompleted {
-			t.Fatalf("phase = %q, want %q (message: %s)", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseCompleted, updated.Status.Message)
-		}
-		if updated.Annotations[AnnotationDownloaderPodSucceeded] != "true" {
-			t.Errorf("expected %s annotation to be persisted before the pod delete", AnnotationDownloaderPodSucceeded)
-		}
-
-		var pv corev1.PersistentVolume
-		if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "pv-scratch"}, &pv); err != nil {
-			t.Fatalf("failed to get PV: %v", err)
-		}
-		if pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.Name != f.targetPVC.Name || pv.Spec.ClaimRef.Namespace != f.targetPVC.Namespace {
-			t.Errorf("PV claimRef = %+v, want %s/%s", pv.Spec.ClaimRef, f.targetPVC.Namespace, f.targetPVC.Name)
-		}
-
-		var pods corev1.PodList
-		_ = fakeClient.List(context.Background(), &pods)
-		if len(pods.Items) != 0 {
-			t.Errorf("expected downloader pod to be cleaned up after completion, found %d", len(pods.Items))
-		}
-	})
-
-	t.Run("pod absent with success marker resumes rebind and completes", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
-
-		// Same rebind fixtures as the pod-succeeded case above, but the pod is
-		// already gone and the DataDownload carries the success marker -- the state
-		// a retry reconcile sees after a prior pass persisted the marker, deleted
-		// the pod, then errored on the strict still-terminating cleanup check. The
-		// pod's absence must resume the rebind, not fail as "Downloader pod not found".
-		origInterval, origTimeout := pvRebindPollInterval, pvRebindTimeout
-		pvRebindPollInterval = 10 * time.Millisecond
-		pvRebindTimeout = 2 * time.Second
-		defer func() {
-			pvRebindPollInterval = origInterval
-			pvRebindTimeout = origTimeout
-		}()
-
-		if f.dd.Annotations == nil {
-			f.dd.Annotations = map[string]string{}
-		}
-		f.dd.Annotations[AnnotationDownloaderPodSucceeded] = "true"
-
-		scratchPV := &corev1.PersistentVolume{
-			ObjectMeta: metav1.ObjectMeta{Name: "pv-scratch"},
-			Spec: corev1.PersistentVolumeSpec{
-				Capacity:                      corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-				AccessModes:                   []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-				PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimDelete,
-				StorageClassName:              "standard",
-				VolumeMode:                    new(corev1.PersistentVolumeFilesystem),
-			},
-		}
-		scratchPVC := &corev1.PersistentVolumeClaim{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "scratch-pvc-1", Namespace: "openshift-adp",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
-			},
-			Spec: corev1.PersistentVolumeClaimSpec{
-				VolumeName:       "pv-scratch",
-				StorageClassName: new("standard"),
-				Resources: corev1.VolumeResourceRequirements{
-					Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("10Gi")},
-				},
-			},
-			Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound},
-		}
-
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
-			WithObjects(f.dd, f.targetPVC, scratchPV, scratchPVC).
-			Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
-
-		defer startFakeBinder(t, fakeClient, scratchPV, f.targetPVC, pvRebindTimeout)()
-
-		if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		var updated velerov2alpha1.DataDownload
-		if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated); err != nil {
-			t.Fatalf("failed to get DataDownload: %v", err)
-		}
-		if updated.Status.Phase != velerov2alpha1.DataDownloadPhaseCompleted {
-			t.Fatalf("phase = %q, want %q (message: %s)", updated.Status.Phase, velerov2alpha1.DataDownloadPhaseCompleted, updated.Status.Message)
-		}
-
-		var pv corev1.PersistentVolume
-		if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: "pv-scratch"}, &pv); err != nil {
-			t.Fatalf("failed to get PV: %v", err)
-		}
-		if pv.Spec.ClaimRef == nil || pv.Spec.ClaimRef.Name != f.targetPVC.Name || pv.Spec.ClaimRef.Namespace != f.targetPVC.Namespace {
-			t.Errorf("PV claimRef = %+v, want %s/%s", pv.Spec.ClaimRef, f.targetPVC.Namespace, f.targetPVC.Name)
-		}
-	})
-
-	t.Run("syncs progress from pod annotations", func(t *testing.T) {
-		f := newDDTestFixture(t)
-		scheme := ddScheme()
-		pod := &corev1.Pod{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: "downloader-pod", Namespace: "openshift-adp",
-				Labels: map[string]string{common.LabelDataDownloadUID: string(f.dd.UID)},
-				Annotations: map[string]string{
-					"kubevirt-datamover.io/total-bytes": "2048",
-					"kubevirt-datamover.io/bytes-done":  "1024",
-				},
-			},
-			Status: corev1.PodStatus{Phase: corev1.PodRunning},
-		}
-		fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(f.dd, pod).Build()
-		r := &KubeVirtDataDownloadReconciler{Client: fakeClient, Scheme: scheme, Log: logr.Discard(), OADPNamespace: "openshift-adp"}
-
-		if _, err := r.handleInProgress(context.Background(), logr.Discard(), f.dd); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-
-		var updated velerov2alpha1.DataDownload
-		_ = fakeClient.Get(context.Background(), types.NamespacedName{Name: f.dd.Name, Namespace: f.dd.Namespace}, &updated)
-
-		if updated.Status.Progress.TotalBytes != 2048 {
-			t.Errorf("expected TotalBytes=2048, got %d", updated.Status.Progress.TotalBytes)
-		}
-		if updated.Status.Progress.BytesDone != 1024 {
-			t.Errorf("expected BytesDone=1024, got %d", updated.Status.Progress.BytesDone)
-		}
-	})
+	if updated.Status.Progress.TotalBytes != 2048 {
+		t.Errorf("expected TotalBytes=2048, got %d", updated.Status.Progress.TotalBytes)
+	}
+	if updated.Status.Progress.BytesDone != 1024 {
+		t.Errorf("expected BytesDone=1024, got %d", updated.Status.Progress.BytesDone)
+	}
 }
 
 // TestCompleteSuccessfulDownload_EmitsRetainedPVEvent covers #152: since the
