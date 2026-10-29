@@ -357,6 +357,18 @@ func buildDownloadPodResources(config *DatamoverPodConfig) ([]corev1.EnvVar, []c
 		corev1.EnvVar{Name: downloader.EnvScratchPath, Value: downloader.DefaultScratchPath},
 		corev1.EnvVar{Name: downloader.EnvTargetPath, Value: targetPath},
 		corev1.EnvVar{Name: downloader.EnvTargetIsBlockDevice, Value: strconv.FormatBool(targetIsBlockDevice)},
+		corev1.EnvVar{
+			Name: downloader.EnvPodName,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"},
+			},
+		},
+		corev1.EnvVar{
+			Name: downloader.EnvPodNamespace,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"},
+			},
+		},
 	)
 
 	volumes := []corev1.Volume{

@@ -28,6 +28,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
+	"github.com/migtools/kubevirt-datamover-controller/pkg/common"
 	"github.com/migtools/kubevirt-datamover-controller/pkg/uploader"
 )
 
@@ -105,7 +107,11 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		}
 
 		scratchDir := t.TempDir()
-		paths, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
+		paths, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -148,7 +154,11 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		}
 
 		scratchDir := t.TempDir()
-		_, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
+		_, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err == nil {
 			t.Fatal("expected error from simulated download failure")
 		}
@@ -173,7 +183,11 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 			{Filename: "disk1.qcow2", DiskName: "disk1", ObjectPath: "checkpoints/ns/vm/cp1/disk1.qcow2", Size: 16},
 		}
 		scratchDir := t.TempDir()
-		_, err := downloadCheckpointFiles(ctx, store, "bucket", files, scratchDir)
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
+		_, err := downloadCheckpointFiles(ctx, store, dummyConfig, files, nil, logr.Discard())
 		if err == nil {
 			t.Fatal("expected error from canceled context")
 		}
@@ -182,7 +196,11 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 	t.Run("empty file list returns empty paths", func(t *testing.T) {
 		store := newMockObjectStore()
 		scratchDir := t.TempDir()
-		paths, err := downloadCheckpointFiles(context.Background(), store, "bucket", nil, scratchDir)
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
+		paths, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, nil, nil, logr.Discard())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -197,10 +215,14 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		store.closeFailPaths["checkpoints/ns/vm/cp1/disk1.qcow2"] = true
 
 		scratchDir := t.TempDir()
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
 		files := []uploader.CheckpointFile{
 			{Filename: "disk1.qcow2", DiskName: "disk1", ObjectPath: "checkpoints/ns/vm/cp1/disk1.qcow2", Size: 16},
 		}
-		_, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		_, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err == nil {
 			t.Fatal("expected error from simulated reader close failure")
 		}
@@ -219,10 +241,14 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		store.objects["checkpoints/ns/vm/cp1/disk1.qcow2"] = []byte("full-backup-data")
 
 		scratchDir := t.TempDir()
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
 		files := []uploader.CheckpointFile{
 			{Filename: "../escape.qcow2", DiskName: "disk1", ObjectPath: "checkpoints/ns/vm/cp1/disk1.qcow2", Size: 16},
 		}
-		_, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		_, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err == nil {
 			t.Fatal("expected error for path traversal filename")
 		}
@@ -237,10 +263,14 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		store.objects["checkpoints/ns/vm/cp1/disk1.qcow2"] = []byte("short")
 
 		scratchDir := t.TempDir()
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
 		files := []uploader.CheckpointFile{
 			{Filename: "disk1.qcow2", DiskName: "disk1", ObjectPath: "checkpoints/ns/vm/cp1/disk1.qcow2", Size: 100},
 		}
-		_, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		_, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err == nil {
 			t.Fatal("expected error when the downloaded object is smaller than its declared size")
 		}
@@ -251,10 +281,14 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		store.objects["checkpoints/ns/vm/cp1/disk1.qcow2"] = []byte("this object is much larger than declared")
 
 		scratchDir := t.TempDir()
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
 		files := []uploader.CheckpointFile{
 			{Filename: "disk1.qcow2", DiskName: "disk1", ObjectPath: "checkpoints/ns/vm/cp1/disk1.qcow2", Size: 4},
 		}
-		_, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		_, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err == nil {
 			t.Fatal("expected error when the downloaded object is larger than its declared size")
 		}
@@ -273,10 +307,14 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		store.objects["checkpoints/ns/vm/cp1/disk1.qcow2"] = []byte("full-backup-data")
 
 		scratchDir := t.TempDir()
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
 		files := []uploader.CheckpointFile{
 			{Filename: "disk1.qcow2", DiskName: "disk1", ObjectPath: "checkpoints/ns/vm/cp1/disk1.qcow2", Size: -1},
 		}
-		_, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		_, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err == nil {
 			t.Fatal("expected error for a negative declared size")
 		}
@@ -296,7 +334,11 @@ func TestDownloadCheckpointFiles(t *testing.T) {
 		}
 
 		scratchDir := t.TempDir()
-		paths, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+		dummyConfig := &DownloaderConfig{
+			ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+			ScratchPath:       scratchDir,
+		}
+		paths, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -333,7 +375,11 @@ func TestDownloadCheckpointFilesReplacesPreExistingSymlink(t *testing.T) {
 	files := []uploader.CheckpointFile{
 		{Filename: "disk1.qcow2", DiskName: "disk1", ObjectPath: "checkpoints/ns/vm/cp1/disk1.qcow2", Size: 16},
 	}
-	paths, err := downloadCheckpointFiles(context.Background(), store, "bucket", files, scratchDir)
+	dummyConfig := &DownloaderConfig{
+		ObjectStoreConfig: common.ObjectStoreConfig{BSLBucket: "bucket"},
+		ScratchPath:       scratchDir,
+	}
+	paths, err := downloadCheckpointFiles(context.Background(), store, dummyConfig, files, nil, logr.Discard())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

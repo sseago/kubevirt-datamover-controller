@@ -44,6 +44,8 @@ import "github.com/migtools/kubevirt-datamover-controller/pkg/common"
 // for the canonical definitions and their values, referenced directly at
 // call sites instead of re-exported here.
 const (
+	EnvPodName             = "POD_NAME"
+	EnvPodNamespace        = "POD_NAMESPACE"
 	EnvVMName              = "KUBEVIRT_DM_VM_NAME"
 	EnvVMNamespace         = "KUBEVIRT_DM_VM_NAMESPACE"
 	EnvVeleroBackupName    = "KUBEVIRT_DM_VELERO_BACKUP_NAME"
@@ -70,6 +72,10 @@ type DownloaderConfig struct {
 	// ObjectStoreConfig holds BSL/object-store connection settings, shared
 	// with UploaderConfig so object-store init code isn't duplicated.
 	common.ObjectStoreConfig
+
+	// Pod context (used for progress reporting)
+	PodName      string
+	PodNamespace string
 
 	// VM context
 	VMName      string

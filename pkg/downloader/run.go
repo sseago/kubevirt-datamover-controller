@@ -26,7 +26,38 @@ import (
 
 	"github.com/migtools/kubevirt-datamover-controller/pkg/common"
 	"github.com/migtools/kubevirt-datamover-controller/pkg/uploader"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	kubevirtbackupv1alpha1 "kubevirt.io/api/backup/v1alpha1"
+	kubevirtcorev1 "kubevirt.io/api/core/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	restcfg "sigs.k8s.io/controller-runtime/pkg/client/config"
 )
+
+var newKubeClient = func() (client.Client, error) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		return nil, err
+	}
+	if err := kubevirtbackupv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to register KubeVirt backup scheme: %w", err)
+	}
+	if err := kubevirtcorev1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("failed to register KubeVirt scheme: %w", err)
+	}
+
+	restConfig, err := restcfg.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get in-cluster config: %w", err)
+	}
+
+	k8sClient, err := client.New(restConfig, client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create K8s client: %w", err)
+	}
+
+	return k8sClient, nil
+}
 
 // Run is the main entrypoint for the downloader.
 func Run(ctx context.Context, logger logr.Logger) error {
@@ -62,6 +93,12 @@ func Run(ctx context.Context, logger logr.Logger) error {
 
 	logger.Info("Object store initialized", "bucket", config.BSLBucket, "prefix", config.BSLPrefix)
 
+	// Create K8s client early for progress reporting
+	k8sClient, err := newKubeClient()
+	if err != nil {
+		return fmt.Errorf("failed to create K8s client: %w", err)
+	}
+
 	manifest, found, err := uploader.GetVMBackupManifest(
 		store, config.VMNamespace, config.VMName, config.VeleroBackupName, config.BSLBucket, logger,
 	)
@@ -93,7 +130,7 @@ func Run(ctx context.Context, logger logr.Logger) error {
 
 	logger.Info("Resolved checkpoint chain", "checkpoints", len(files))
 
-	localPaths, err := downloadCheckpointFiles(ctx, store, config.BSLBucket, files, config.ScratchPath)
+	localPaths, err := downloadCheckpointFiles(ctx, store, config, files, k8sClient, logger)
 	if err != nil {
 		return fmt.Errorf("failed to download checkpoint files: %w", err)
 	}
@@ -182,6 +219,8 @@ func prepareDir(dir string) error {
 // LoadConfigFromEnv parses environment variables into DownloaderConfig.
 func LoadConfigFromEnv() (*DownloaderConfig, error) {
 	config := &DownloaderConfig{
+		PodName:      os.Getenv(EnvPodName),
+		PodNamespace: os.Getenv(EnvPodNamespace),
 		ObjectStoreConfig: common.ObjectStoreConfig{
 			BSLProvider:                    os.Getenv(common.EnvBSLProvider),
 			BSLBucket:                      os.Getenv(common.EnvBSLBucket),

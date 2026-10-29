@@ -23,9 +23,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/go-logr/logr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"github.com/vmware-tanzu/velero/pkg/plugin/velero"
 
+	"github.com/migtools/kubevirt-datamover-controller/pkg/common"
 	"github.com/migtools/kubevirt-datamover-controller/pkg/uploader"
 )
 
@@ -38,8 +42,9 @@ import (
 // equivalent loop), so a single in-flight download can't be interrupted, but
 // a canceled restore won't start any further downloads.
 func downloadCheckpointFiles(
-	ctx context.Context, store velero.ObjectStore, bucket string, files []uploader.CheckpointFile, scratchDir string,
+	ctx context.Context, store velero.ObjectStore, config *DownloaderConfig, files []uploader.CheckpointFile, k8sClient client.Client, logger logr.Logger,
 ) ([]string, error) {
+	scratchDir := config.ScratchPath
 	absScratchDir, err := filepath.Abs(scratchDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve scratch dir %q: %w", scratchDir, err)
@@ -52,6 +57,21 @@ func downloadCheckpointFiles(
 	// Width the index prefix to the chain length so lexical and chain order
 	// agree even past 100 checkpoints (e.g. "005-" sorts before "100-").
 	indexWidth := max(len(fmt.Sprintf("%d", len(files)-1)), 2)
+
+	var totalBytes int64
+	for _, f := range files {
+		if f.Size > 0 {
+			totalBytes += f.Size
+		}
+	}
+
+	var bytesDone int64
+	reportProgress := func(currentDone int64) {
+		if config.PodName != "" && config.PodNamespace != "" && k8sClient != nil {
+			common.PatchPodProgress(ctx, k8sClient, config.PodName, config.PodNamespace, totalBytes, 0, currentDone, logger)
+		}
+	}
+	reportProgress(0)
 
 	localPaths := make([]string, 0, len(files))
 	// cleanup removes every downloaded file so far. Its own removal
@@ -76,7 +96,7 @@ func downloadCheckpointFiles(
 			return nil, errors.Join(fmt.Errorf("invalid checkpoint filename %q", file.Filename), cleanup())
 		}
 		localPath := filepath.Join(scratchDir, fmt.Sprintf("%0*d-%s", indexWidth, i, file.Filename))
-		if err := downloadOne(store, bucket, file.ObjectPath, localPath, file.Size); err != nil {
+		if err := downloadOne(store, config.BSLBucket, file.ObjectPath, localPath, file.Size, &bytesDone, reportProgress); err != nil {
 			return nil, errors.Join(fmt.Errorf("failed to download checkpoint file %q: %w", file.ObjectPath, err), cleanup())
 		}
 		localPaths = append(localPaths, localPath)
@@ -88,7 +108,7 @@ func downloadCheckpointFiles(
 	return localPaths, nil
 }
 
-func downloadOne(store velero.ObjectStore, bucket, objectPath, localPath string, size int64) error {
+func downloadOne(store velero.ObjectStore, bucket, objectPath, localPath string, size int64, bytesDone *int64, reportProgress func(int64)) error {
 	if size < 0 {
 		return fmt.Errorf("invalid declared size %d for object %q", size, objectPath)
 	}
@@ -116,7 +136,16 @@ func downloadOne(store velero.ObjectStore, bucket, objectPath, localPath string,
 	// copies cleanly, while an oversized (corrupted or replaced) object hits
 	// the limit at size+1 bytes instead of being downloaded unbounded, which
 	// the length check below then rejects the same as an undersized object.
-	written, copyErr := io.Copy(out, io.LimitReader(reader, size+1))
+	progressReader := &common.ProgressReader{
+		Reader:     io.LimitReader(reader, size+1),
+		UpdateFreq: 5 * time.Second,
+		Reporter: func(read int64) {
+			reportProgress(*bytesDone + read)
+		},
+	}
+
+	written, copyErr := io.Copy(out, progressReader)
+	*bytesDone += written
 	// Close() on an object-store reader can surface a late transport/checksum
 	// error even when the preceding reads looked successful, so it must be
 	// checked rather than discarded.

@@ -1572,6 +1572,28 @@ func (r *KubeVirtDataDownloadReconciler) buildDownloaderPodConfig(
 	}, nil
 }
 
+func (r *KubeVirtDataDownloadReconciler) syncProgressFromPod(ctx context.Context, logger logr.Logger, dd *velerov2alpha1.DataDownload, pod *corev1.Pod) {
+	if pod.Annotations == nil {
+		return
+	}
+	totalStr := pod.Annotations["kubevirt-datamover.io/total-bytes"]
+	doneStr := pod.Annotations["kubevirt-datamover.io/bytes-done"]
+
+	if totalStr != "" && doneStr != "" {
+		total, _ := strconv.ParseInt(totalStr, 10, 64)
+		done, _ := strconv.ParseInt(doneStr, 10, 64)
+
+		if dd.Status.Progress.TotalBytes != total || dd.Status.Progress.BytesDone != done {
+			patch := client.MergeFrom(dd.DeepCopy())
+			dd.Status.Progress.TotalBytes = total
+			dd.Status.Progress.BytesDone = done
+			if err := r.Patch(ctx, dd, patch); err != nil {
+				logger.Error(err, "Failed to patch DataDownload progress")
+			}
+		}
+	}
+}
+
 // handleInProgress processes DataDownloads in InProgress phase.
 // Monitors the downloader pod; on success, rebinds the scratch PV into the restore
 // target namespace under the exact PVC name Velero created, then transitions to
@@ -1635,6 +1657,8 @@ func (r *KubeVirtDataDownloadReconciler) handleInProgress(ctx context.Context, l
 	case corev1.PodSucceeded:
 		logger.Info("Downloader pod completed successfully", "pod", pod.Name)
 
+		r.syncProgressFromPod(ctx, logger, dd, pod)
+
 		// Record the success on the DataDownload BEFORE deleting the pod (see
 		// AnnotationDownloaderPodSucceeded's doc comment): the strict cleanup
 		// below routinely errors while the pod is still terminating, and the
@@ -1670,6 +1694,8 @@ func (r *KubeVirtDataDownloadReconciler) handleInProgress(ctx context.Context, l
 		failureMessage := extractPodFailureMessage(pod)
 		logger.Error(nil, "Downloader pod failed", "pod", pod.Name, "message", failureMessage)
 
+		r.syncProgressFromPod(ctx, logger, dd, pod)
+
 		r.emitPodLogs(ctx, logger, pod)
 
 		// Skip cleanup on failure to preserve resources (pod, scratch PVC) for debugging.
@@ -1681,6 +1707,8 @@ func (r *KubeVirtDataDownloadReconciler) handleInProgress(ctx context.Context, l
 		return ctrl.Result{}, nil
 
 	case corev1.PodPending, corev1.PodRunning:
+		r.syncProgressFromPod(ctx, logger, dd, pod)
+
 		logger.V(1).Info("Downloader pod still running", "pod", pod.Name, "phase", pod.Status.Phase)
 		return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 
@@ -2059,7 +2087,7 @@ func (r *KubeVirtDataDownloadReconciler) checkConcurrentDataMoverLimit(ctx conte
 	// in Reconcile, before dispatch reaches handlePrepared). A genuinely stuck
 	// higher-priority peer still ages out normally (its own AcceptedTimestamp
 	// is untouched by this), freeing this DD's slot once that peer times out
-	// or completes -- so this can't cause indefinite starvation, only push the
+	// or completes -- so this can can't cause indefinite starvation, only push the
 	// deadline out for as long as this DD is legitimately waiting its turn.
 	if dd.Status.AcceptedTimestamp != nil {
 		// Re-fetch immediately before writing: this path runs every
