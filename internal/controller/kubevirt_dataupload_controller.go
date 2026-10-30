@@ -1229,6 +1229,12 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 			if !r.cleanupDatamoverResources(ctx, logger, du, podNamespace) {
 				return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
 			}
+
+			vmRef, _ := common.GetVMReference(du)
+			if vmRef != nil {
+				r.cleanupVMBackupResources(ctx, logger, du, vmRef.Namespace)
+			}
+
 			if err := r.updatePhase(ctx, du, velerov2alpha1.DataUploadPhaseCompleted, "Data upload completed"); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -1261,6 +1267,11 @@ func (r *KubeVirtDataUploadReconciler) handleInProgress(ctx context.Context, log
 		// than blocking this one on waitForPVCDeletion.
 		if !r.cleanupDatamoverResources(ctx, logger, du, podNamespace) {
 			return ctrl.Result{RequeueAfter: RequeueAfterShort}, nil
+		}
+
+		vmRef, _ := common.GetVMReference(du)
+		if vmRef != nil {
+			r.cleanupVMBackupResources(ctx, logger, du, vmRef.Namespace)
 		}
 
 		if err := r.updatePhase(ctx, du, velerov2alpha1.DataUploadPhaseCompleted, "Data upload completed"); err != nil {
